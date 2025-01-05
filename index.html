@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <title>PDF Viewer với Canvas</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/idb@7/build/umd.js"></script>
     <style>
         * {
             margin: 0;
@@ -228,9 +229,10 @@
         <button id="fullscreen-btn">⛶ Toàn màn hình</button>
     </div>
     <div class="container" id="pages-container"></div>
-    <div class="loading" id="loading-indicator">Đang tải thêm trang...</div>
+    <div class="loading" id="loading-indicator">Loading pages...</div>
 
     <script>
+        // Khởi tạo PDF.js worker
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js';
 
         // Các biến chính
@@ -260,6 +262,11 @@
         // Cache system
         let canvasCache = new Map();
         const CACHE_SIZE = 10;
+
+        // IndexedDB setup
+        const DB_NAME = 'PDFCache';
+        const STORE_NAME = 'pdfs';
+        const DB_VERSION = 1;
 
         // Action History System
         const actionHistory = {
@@ -373,69 +380,41 @@
             }
         };
 
-        function toggleFullScreen() {
-            if (!document.fullscreenElement) {
-                document.documentElement.requestFullscreen().catch(err => {
-                    console.error(`Error attempting to enable fullscreen: ${err.message}`);
-                });
-            } else {
-                if (document.exitFullscreen) {
-                    document.exitFullscreen();
-                }
-            }
-        }
-
-        // Thêm event listeners cho fullscreen
-        fullscreenBtn.addEventListener('click', () => {
-            toggleFullScreen();
-        });
-
-        document.addEventListener('fullscreenchange', () => {
-            isFullscreen = !!document.fullscreenElement;
-            document.body.classList.toggle('fullscreen-mode', isFullscreen);
-
-            // Cập nhật icon và text của nút
-            if (isFullscreen) {
-                fullscreenBtn.textContent = '⛶ Thu nhỏ';
-            } else {
-                fullscreenBtn.textContent = '⛶ Toàn màn hình';
-            }
-
-            // Vẽ lại canvas để đảm bảo hiển thị đúng
-            const visibleCanvas = getVisibleCanvas();
-            if (visibleCanvas) {
-                redrawCanvas(visibleCanvas);
-            }
-        });
-
-        // Xử lý khi nhấn ESC để thoát fullscreen
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && isFullscreen) {
-                document.exitFullscreen();
-            }
-        });
-
-
-        // Canvas Management Functions
-        function manageCanvasCache(pageNumber) {
-            if (canvasCache.size > CACHE_SIZE) {
-                const oldestPage = canvasCache.keys().next().value;
-                canvasCache.delete(oldestPage);
-            }
-
-            const canvas = document.querySelector(`canvas[data-page-number="${pageNumber}"]`);
-            if (canvas) {
-                canvasCache.set(pageNumber, canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height));
-            }
+        // IndexedDB functions
+        async function openDB() {
+            return idb.openDB(DB_NAME, DB_VERSION, {
+                upgrade(db) {
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        db.createObjectStore(STORE_NAME);
+                    }
+                },
+            });
         }
 
         async function loadPDF() {
+            const loadingIndicator = document.getElementById('loading-indicator');
+            loadingIndicator.classList.add('active');
+            loadingIndicator.textContent = 'Checking cache...';
+
             try {
-                const loadingTask = pdfjsLib.getDocument('khoa_hoc.pdf');
-                pdfDoc = await loadingTask.promise;
+                const db = await openDB();
+                const pdfKey = 'khoa_hoc.pdf';
+                let pdfData = await db.get(STORE_NAME, pdfKey);
+
+                if (!pdfData) {
+                    loadingIndicator.textContent = 'Downloading PDF...';
+                    const response = await fetch('khoa_hoc.pdf');
+                    pdfData = await response.arrayBuffer();
+
+                    await db.put(STORE_NAME, pdfData, pdfKey);
+                    loadingIndicator.textContent = 'PDF cached successfully';
+                } else {
+                    loadingIndicator.textContent = 'Loading from cache...';
+                }
+
+                pdfDoc = await pdfjsLib.getDocument({ data: pdfData }).promise;
 
                 actionHistory.loadFromLocalStorage();
-
                 const savedPaths = localStorage.getItem('drawings');
                 if (savedPaths) {
                     pathsByPage = JSON.parse(savedPaths);
@@ -445,8 +424,11 @@
                 }
 
                 await loadNextPages();
+                loadingIndicator.classList.remove('active');
+
             } catch (error) {
                 console.error('Error loading PDF:', error);
+                loadingIndicator.textContent = 'Error loading PDF: ' + error.message;
             }
         }
 
@@ -465,10 +447,8 @@
                     const pageSpread = document.createElement('div');
                     pageSpread.className = 'page-spread';
 
-                    // Render trang bên trái
                     await renderPage(pageNum, pageSpread);
 
-                    // Render trang bên phải (nếu còn)
                     if (pageNum + 1 <= endPage) {
                         await renderPage(pageNum + 1, pageSpread);
                     }
@@ -530,7 +510,34 @@
             }
         }
 
-        // Drawing Event Handlers
+        // Các hàm điều khiển vẽ
+        function setupDrawingEvents(canvas) {
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing);
+
+            canvas.addEventListener('mousemove', (e) => {
+                cursorDot.style.display = 'block';
+                cursorDot.style.left = e.clientX + 'px';
+                cursorDot.style.top = e.clientY + 'px';
+
+                if (currentMode === 'pen') {
+                    cursorDot.style.backgroundColor = colorPicker.value;
+                } else {
+                    cursorDot.style.backgroundColor = '#000';
+                }
+            });
+
+            canvas.addEventListener('mouseenter', () => {
+                cursorDot.style.display = 'block';
+            });
+
+            canvas.addEventListener('mouseleave', () => {
+                cursorDot.style.display = 'none';
+            });
+        }
+
         function startDrawing(e) {
             isDrawing = true;
             activeCanvas = e.target;
@@ -618,13 +625,6 @@
             currentPath = [];
         }
 
-        function setupDrawingEvents(canvas) {
-            canvas.addEventListener('mousedown', startDrawing);
-            canvas.addEventListener('mousemove', handleMouseMove);
-            canvas.addEventListener('mouseup', stopDrawing);
-            canvas.addEventListener('mouseout', stopDrawing);
-        }
-
         // Utility Functions
         function redrawCanvas(canvas) {
             const ctx = canvas.getContext('2d');
@@ -661,6 +661,18 @@
                 localStorage.setItem('drawings', JSON.stringify(pathsByPage));
             } catch (error) {
                 console.error('Error saving drawings:', error);
+            }
+        }
+
+        function manageCanvasCache(pageNumber) {
+            if (canvasCache.size > CACHE_SIZE) {
+                const oldestPage = canvasCache.keys().next().value;
+                canvasCache.delete(oldestPage);
+            }
+
+            const canvas = document.querySelector(`canvas[data-page-number="${pageNumber}"]`);
+            if (canvas) {
+                canvasCache.set(pageNumber, canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height));
             }
         }
 
@@ -709,17 +721,82 @@
             return Math.sqrt(dx * dx + dy * dy);
         }
 
+        function toggleFullScreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    console.error(`Error attempting to enable fullscreen: ${err.message}`);
+                });
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                }
+            }
+        }
+
+        function saveScrollPosition() {
+            lastScrollPosition = window.scrollY;
+            localStorage.setItem('lastScrollPosition', lastScrollPosition);
+        }
+
+        async function restoreScrollPosition() {
+            try {
+                const savedPosition = localStorage.getItem('lastScrollPosition');
+                if (!savedPosition) return;
+
+                const targetPosition = parseInt(savedPosition);
+
+                const pageSpread = document.querySelector('.page-spread');
+                if (!pageSpread) return;
+                const spreadHeight = pageSpread.offsetHeight;
+
+                if (spreadHeight === 0) return;
+
+                const spreadsNeeded = Math.ceil((targetPosition + window.innerHeight) / spreadHeight);
+                const pagesNeeded = spreadsNeeded * 2;
+
+                while (currentLoadedPage < pagesNeeded && currentLoadedPage < pdfDoc.numPages) {
+                    await loadNextPages();
+                }
+
+                setTimeout(() => {
+                    window.scrollTo({
+                        top: targetPosition,
+                        behavior: 'smooth'
+                    });
+                }, 100);
+
+            } catch (error) {
+                console.error('Error restoring scroll position:', error);
+            }
+        }
+
+        function checkLoadMore() {
+            if (isLoading || currentLoadedPage >= pdfDoc.numPages) return;
+
+            const lastPageContainer = pagesContainer.lastElementChild;
+            if (!lastPageContainer) return;
+
+            const rect = lastPageContainer.getBoundingClientRect();
+            const threshold = window.innerHeight * 2;
+
+            if (rect.bottom - window.innerHeight < threshold) {
+                loadNextPages();
+            }
+        }
+
         // Event Listeners
         penBtn.addEventListener('click', () => {
             currentMode = 'pen';
             penBtn.classList.add('active');
             eraserBtn.classList.remove('active');
+            cursorDot.style.backgroundColor = colorPicker.value;
         });
 
         eraserBtn.addEventListener('click', () => {
             currentMode = 'eraser';
             eraserBtn.classList.add('active');
             penBtn.classList.remove('active');
+            cursorDot.style.backgroundColor = '#000';
         });
 
         undoBtn.addEventListener('click', () => {
@@ -764,6 +841,26 @@
             }
         });
 
+        fullscreenBtn.addEventListener('click', () => {
+            toggleFullScreen();
+        });
+
+        document.addEventListener('fullscreenchange', () => {
+            isFullscreen = !!document.fullscreenElement;
+            document.body.classList.toggle('fullscreen-mode', isFullscreen);
+
+            if (isFullscreen) {
+                fullscreenBtn.textContent = '⛶ Thu nhỏ';
+            } else {
+                fullscreenBtn.textContent = '⛶ Toàn màn hình';
+            }
+
+            const visibleCanvas = getVisibleCanvas();
+            if (visibleCanvas) {
+                redrawCanvas(visibleCanvas);
+            }
+        });
+
         restorePositionBtn.addEventListener('click', restoreScrollPosition);
 
         window.addEventListener('scroll', () => {
@@ -773,7 +870,20 @@
 
         window.addEventListener('resize', checkLoadMore);
 
+        colorPicker.addEventListener('input', () => {
+            if (currentMode === 'pen') {
+                cursorDot.style.backgroundColor = colorPicker.value;
+            }
+        });
+
+        document.addEventListener('mouseleave', () => {
+            cursorDot.style.display = 'none';
+        });
+
         document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && isFullscreen) {
+                document.exitFullscreen();
+            }
             if (e.ctrlKey && e.key === 'z') {
                 e.preventDefault();
                 undoBtn.click();
@@ -784,157 +894,27 @@
             }
         });
 
-        // Auto-save timer
-        setInterval(() => {
-            if (Object.keys(pathsByPage).length > 0) {
-                saveDrawings();
-                actionHistory.saveToLocalStorage();
-            }
-        }, 30000);
-
-        // Error handling
-        window.onerror = function (msg, url, lineNo, columnNo, error) {
-            console.error('Error: ', { msg, url, lineNo, columnNo, error });
-            return false;
-        };
-
-        window.addEventListener('unhandledrejection', function (event) {
-            console.error('Unhandled promise rejection:', event.reason);
-        });
-
-        // Helper functions
-        function getVisibleCanvas() {
-            const canvases = document.querySelectorAll('.drawing-canvas');
-            for (let canvas of canvases) {
-                const rect = canvas.getBoundingClientRect();
-                if (rect.top < window.innerHeight && rect.bottom > 0) {
-                    return canvas;
-                }
-            }
-            return null;
-        }
-
-        function saveScrollPosition() {
-            lastScrollPosition = window.scrollY;
-            // Lưu ngay lập tức không chờ interval
-            localStorage.setItem('lastScrollPosition', lastScrollPosition);
-        }
-
-        async function restoreScrollPosition() {
-            try {
-                const savedPosition = localStorage.getItem('lastScrollPosition');
-                if (!savedPosition) return;
-
-                const targetPosition = parseInt(savedPosition);
-
-                // Lấy chiều cao của 1 spread (2 trang)
-                const pageSpread = document.querySelector('.page-spread');
-                if (!pageSpread) return;
-                const spreadHeight = pageSpread.offsetHeight;
-
-                if (spreadHeight === 0) return;
-
-                // Tính số spread cần thiết để load
-                const spreadsNeeded = Math.ceil((targetPosition + window.innerHeight) / spreadHeight);
-                // Chuyển đổi số spread thành số trang
-                const pagesNeeded = spreadsNeeded * 2;
-
-                // Load thêm trang nếu cần
-                while (currentLoadedPage < pagesNeeded && currentLoadedPage < pdfDoc.numPages) {
-                    await loadNextPages();
-                }
-
-                // Thêm một setTimeout nhỏ để đảm bảo tất cả trang đã render xong
-                setTimeout(() => {
-                    window.scrollTo({
-                        top: targetPosition,
-                        behavior: 'smooth'
-                    });
-                }, 100);
-
-            } catch (error) {
-                console.error('Error restoring scroll position:', error);
-            }
-        }
-
-        function checkLoadMore() {
-            if (isLoading || currentLoadedPage >= pdfDoc.numPages) return;
-
-            const lastPageContainer = pagesContainer.lastElementChild;
-            if (!lastPageContainer) return;
-
-            const rect = lastPageContainer.getBoundingClientRect();
-            const threshold = window.innerHeight * 2;
-
-            if (rect.bottom - window.innerHeight < threshold) {
-                loadNextPages();
-            }
-        }
-
         // Initialize
-        penBtn.classList.add('active');
-        loadPDF().catch(console.error);
-        // Thêm vào đầu file JavaScript
-        const cursorDot = document.createElement('div');
-        cursorDot.className = 'cursor-dot';
-        document.body.appendChild(cursorDot);
+        function init() {
+            penBtn.classList.add('active');
+            loadPDF().catch(console.error);
 
-        // Thêm vào setupDrawingEvents
-        function setupDrawingEvents(canvas) {
-            canvas.addEventListener('mousedown', startDrawing);
-            canvas.addEventListener('mousemove', handleMouseMove);
-            canvas.addEventListener('mouseup', stopDrawing);
-            canvas.addEventListener('mouseout', stopDrawing);
+            const cursorDot = document.createElement('div');
+            cursorDot.className = 'cursor-dot';
+            document.body.appendChild(cursorDot);
 
-            // Thêm xử lý cho con trỏ tùy chỉnh
-            canvas.addEventListener('mousemove', (e) => {
-                cursorDot.style.display = 'block';
-                cursorDot.style.left = e.clientX + 'px';
-                cursorDot.style.top = e.clientY + 'px';
-
-                // Thay đổi màu dot theo màu được chọn khi đang ở chế độ pen
-                if (currentMode === 'pen') {
-                    cursorDot.style.backgroundColor = colorPicker.value;
-                } else {
-                    cursorDot.style.backgroundColor = '#000';
+            // Auto-save
+            setInterval(() => {
+                if (Object.keys(pathsByPage).length > 0) {
+                    saveDrawings();
+                    actionHistory.saveToLocalStorage();
                 }
-            });
-
-            canvas.addEventListener('mouseenter', () => {
-                cursorDot.style.display = 'block';
-            });
-
-            canvas.addEventListener('mouseleave', () => {
-                cursorDot.style.display = 'none';
-            });
+            }, 30000);
         }
 
-        // Thêm xử lý khi thay đổi công cụ
-        penBtn.addEventListener('click', () => {
-            currentMode = 'pen';
-            penBtn.classList.add('active');
-            eraserBtn.classList.remove('active');
-            cursorDot.style.backgroundColor = colorPicker.value;
-        });
+        // Start the application
+        init();
 
-        eraserBtn.addEventListener('click', () => {
-            currentMode = 'eraser';
-            eraserBtn.classList.add('active');
-            penBtn.classList.remove('active');
-            cursorDot.style.backgroundColor = '#000';
-        });
-
-        // Thêm xử lý khi thay đổi màu
-        colorPicker.addEventListener('input', () => {
-            if (currentMode === 'pen') {
-                cursorDot.style.backgroundColor = colorPicker.value;
-            }
-        });
-
-        // Ẩn cursor dot khi ra khỏi window
-        document.addEventListener('mouseleave', () => {
-            cursorDot.style.display = 'none';
-        });
     </script>
 </body>
 
