@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <title>PDF Viewer với Canvas</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #fff1f2;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .tools {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            padding: 12px 20px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            box-shadow: 0 4px 12px rgba(251, 113, 133, 0.15);
+            z-index: 1000;
+        }
+
+        .tools button {
+            padding: 10px 18px;
+            border: none;
+            border-radius: 8px;
+            background-color: #ffe4e6;
+            color: #be123c;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+
+        .tools button:hover {
+            background-color: #fecdd3;
+            transform: translateY(-1px);
+        }
+
+        .tools button.active {
+            background-color: #fb7185;
+            color: white;
+        }
+
+        .tools input[type="color"] {
+            width: 40px;
+            height: 40px;
+            padding: 0;
+            border: none;
+            border-radius: 6px;
+            background: none;
+            cursor: pointer;
+        }
+
+        .tools input[type="color"]::-webkit-color-swatch-wrapper {
+            padding: 0;
+        }
+
+        .tools input[type="color"]::-webkit-color-swatch {
+            border: none;
+            border-radius: 6px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 80px auto 40px;
+            padding: 0 20px;
+        }
+
+        .page-container {
+            position: relative;
+            margin-bottom: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+            overflow: hidden;
+        }
+
+        .pdf-render,
+        .drawing-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        .pdf-render {
+            z-index: 1;
+        }
+
+        .drawing-canvas {
+            z-index: 2;
+            cursor: crosshair;
+        }
+
+        /* Loading indicator */
+        .loading {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Responsive design */
+        @media (max-width: 768px) {
+            .container {
+                padding: 0 10px;
+            }
+
+            .tools {
+                padding: 8px 10px;
+                flex-wrap: wrap;
+            }
+
+            .tools button {
+                padding: 6px 12px;
+                font-size: 13px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="tools">
+        <input type="color" id="color-picker" value="#000000" title="Chọn màu">
+        <button id="pen-btn" class="active">Bút vẽ</button>
+        <button id="eraser-btn">Tẩy</button>
+        <button id="undo-btn">⟲ Hoàn tác</button>
+        <button id="redo-btn">⟳ Làm lại</button>
+        <button id="restore-position-btn">↩ Vị trí cũ</button>
+    </div>
+    <div class="container" id="pages-container"></div>
+    <div class="loading" id="loading-indicator">Đang tải thêm trang...</div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js';
+
+        const pagesContainer = document.getElementById('pages-container');
+        const colorPicker = document.getElementById('color-picker');
+        const undoBtn = document.getElementById('undo-btn');
+        const penBtn = document.getElementById('pen-btn');
+        const eraserBtn = document.getElementById('eraser-btn');
+        const restorePositionBtn = document.getElementById('restore-position-btn');
+        const redoBtn = document.getElementById('redo-btn');
+
+        let currentMode = 'pen';
+        let pdfDoc = null;
+        let pathsByPage = {};
+        let redoStackByPage = {};
+        let activeCanvas = null;
+        let currentPath = [];
+        let isDrawing = false;
+        let lastScrollPosition = 0;
+        let currentLoadedPage = 0;
+        const PAGES_PER_LOAD = 5;
+        let isLoading = false;
+
+        function saveScrollPosition() {
+            lastScrollPosition = window.scrollY;
+            localStorage.setItem('lastScrollPosition', lastScrollPosition);
+        }
+
+        async function restoreScrollPosition() {
+            const savedPosition = localStorage.getItem('lastScrollPosition');
+            if (!savedPosition) return;
+
+            const targetPosition = parseInt(savedPosition);
+
+            // Tính toán số trang cần thiết dựa vào vị trí cuộn
+            const pageHeight = document.querySelector('.page-container')?.offsetHeight || 0;
+            if (pageHeight === 0) return;
+
+            const pagesNeeded = Math.ceil((targetPosition + window.innerHeight) / pageHeight);
+
+            // Load thêm trang nếu cần
+            while (currentLoadedPage < pagesNeeded && currentLoadedPage < pdfDoc.numPages) {
+                await loadNextPages();
+            }
+
+            // Cuộn đến vị trí đã lưu
+            window.scrollTo({
+                top: targetPosition,
+                behavior: 'smooth'
+            });
+        }
+
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey && e.key === 'z') {
+                e.preventDefault();
+                undo();
+            }
+            if (e.ctrlKey && e.key === 'y') {
+                e.preventDefault();
+                redo();
+            }
+        });
+
+        // Sửa lại hàm loadPDF
+        async function loadPDF() {
+            const loadingTask = pdfjsLib.getDocument('khoa_hoc.pdf');
+            pdfDoc = await loadingTask.promise;
+
+            const savedPaths = localStorage.getItem('drawings');
+            const savedRedoStack = localStorage.getItem('redoStack');
+
+            if (savedPaths) {
+                pathsByPage = JSON.parse(savedPaths);
+            }
+            if (savedRedoStack) {
+                redoStackByPage = JSON.parse(savedRedoStack);
+            }
+
+            for (let i = 1; i <= pdfDoc.numPages; i++) {
+                if (!redoStackByPage[i]) {
+                    redoStackByPage[i] = [];
+                }
+            }
+
+            await loadNextPages();
+        }
+
+        // Thêm hàm loadNextPages
+        async function loadNextPages() {
+            if (isLoading || currentLoadedPage >= pdfDoc.numPages) return;
+
+            isLoading = true;
+            const startPage = currentLoadedPage + 1;
+            const endPage = Math.min(startPage + PAGES_PER_LOAD - 1, pdfDoc.numPages);
+
+            try {
+                const loadingIndicator = document.getElementById('loading-indicator');
+                if (loadingIndicator) loadingIndicator.classList.add('active');
+
+                for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+                    await renderPage(pageNum);
+                }
+
+                currentLoadedPage = endPage;
+            } finally {
+                isLoading = false;
+                const loadingIndicator = document.getElementById('loading-indicator');
+                if (loadingIndicator) loadingIndicator.classList.remove('active');
+            }
+        }
+
+        // Thêm hàm kiểm tra cần load thêm
+        function checkLoadMore() {
+            if (isLoading || currentLoadedPage >= pdfDoc.numPages) return;
+
+            const lastPageContainer = pagesContainer.lastElementChild;
+            if (!lastPageContainer) return;
+
+            const rect = lastPageContainer.getBoundingClientRect();
+            const threshold = window.innerHeight * 2; // Load khi còn cách 2 màn hình
+
+            if (rect.bottom - window.innerHeight < threshold) {
+                loadNextPages();
+            }
+        }
+
+
+        async function renderPage(pageNumber) {
+            const page = await pdfDoc.getPage(pageNumber);
+            const viewport = page.getViewport({ scale: 1.5 });
+
+            const pageContainer = document.createElement('div');
+            pageContainer.className = 'page-container';
+            pageContainer.style.width = viewport.width + 'px';
+            pageContainer.style.height = viewport.height + 'px';
+
+            const pdfCanvas = document.createElement('canvas');
+            pdfCanvas.className = 'pdf-render';
+            pdfCanvas.width = viewport.width;
+            pdfCanvas.height = viewport.height;
+
+            const drawingCanvas = document.createElement('canvas');
+            drawingCanvas.className = 'drawing-canvas';
+            drawingCanvas.width = viewport.width;
+            drawingCanvas.height = viewport.height;
+            drawingCanvas.dataset.pageNumber = pageNumber;
+
+            pageContainer.appendChild(pdfCanvas);
+            pageContainer.appendChild(drawingCanvas);
+            pagesContainer.appendChild(pageContainer);
+
+            const renderContext = {
+                canvasContext: pdfCanvas.getContext('2d'),
+                viewport: viewport
+            };
+            await page.render(renderContext);
+
+            setupDrawingEvents(drawingCanvas);
+
+            if (!pathsByPage[pageNumber]) {
+                pathsByPage[pageNumber] = [];
+            }
+
+            redrawCanvas(drawingCanvas);
+        }
+
+        function setupDrawingEvents(canvas) {
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing);
+        }
+
+        function startDrawing(e) {
+            isDrawing = true;
+            activeCanvas = e.target;
+            const rect = activeCanvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            if (currentMode === 'pen') {
+                currentPath = [{
+                    x: x,
+                    y: y,
+                    mode: currentMode,
+                    color: colorPicker.value
+                }];
+            }
+        }
+
+        function handleMouseMove(e) {
+            const rect = e.target.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            if (currentMode === 'eraser' && isDrawing) {
+                const pageNumber = parseInt(e.target.dataset.pageNumber);
+                const paths = pathsByPage[pageNumber] || [];
+                let erasedPath = false;
+
+                for (let i = paths.length - 1; i >= 0; i--) {
+                    if (isPointInPath(paths[i], x, y)) {
+                        if (!redoStackByPage[pageNumber]) {
+                            redoStackByPage[pageNumber] = [];
+                        }
+                        redoStackByPage[pageNumber].push(paths[i]);
+                        paths.splice(i, 1);
+                        erasedPath = true;
+                        break;
+                    }
+                }
+
+                if (erasedPath) {
+                    redrawCanvas(e.target);
+                    saveDrawings();
+                }
+            } else if (isDrawing && activeCanvas && currentMode === 'pen') {
+                currentPath.push({
+                    x: x,
+                    y: y,
+                    mode: currentMode,
+                    color: colorPicker.value
+                });
+                redrawCanvas(activeCanvas);
+            }
+        }
+
+        function stopDrawing() {
+            if (!isDrawing || !activeCanvas) return;
+            isDrawing = false;
+
+            if (currentMode === 'pen' && currentPath.length > 0) {
+                const pageNumber = parseInt(activeCanvas.dataset.pageNumber);
+                pathsByPage[pageNumber].push(currentPath);
+                redoStackByPage[pageNumber] = [];
+                saveDrawings();
+            }
+
+            activeCanvas = null;
+        }
+
+        function redrawCanvas(canvas) {
+            const ctx = canvas.getContext('2d');
+            const pageNumber = parseInt(canvas.dataset.pageNumber);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            [...(pathsByPage[pageNumber] || []), isDrawing ? currentPath : []].forEach(path => {
+                if (!path || path.length < 2) return;
+
+                ctx.beginPath();
+                ctx.moveTo(path[0].x, path[0].y);
+                ctx.strokeStyle = path[0].color;
+                ctx.lineWidth = 2;
+
+                for (let i = 1; i < path.length; i++) {
+                    ctx.lineTo(path[i].x, path[i].y);
+                }
+                ctx.stroke();
+            });
+        }
+
+        function isPointInPath(path, x, y) {
+            const tolerance = 5;
+
+            for (let i = 1; i < path.length; i++) {
+                const x1 = path[i - 1].x;
+                const y1 = path[i - 1].y;
+                const x2 = path[i].x;
+                const y2 = path[i].y;
+
+                const distance = pointToLineDistance(x, y, x1, y1, x2, y2);
+                if (distance < tolerance) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function pointToLineDistance(x, y, x1, y1, x2, y2) {
+            const A = x - x1;
+            const B = y - y1;
+            const C = x2 - x1;
+            const D = y2 - y1;
+
+            const dot = A * C + B * D;
+            const lenSq = C * C + D * D;
+            let param = -1;
+
+            if (lenSq !== 0) {
+                param = dot / lenSq;
+            }
+
+            let xx, yy;
+
+            if (param < 0) {
+                xx = x1;
+                yy = y1;
+            } else if (param > 1) {
+                xx = x2;
+                yy = y2;
+            } else {
+                xx = x1 + param * C;
+                yy = y1 + param * D;
+            }
+
+            const dx = x - xx;
+            const dy = y - yy;
+
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        function getVisibleCanvas() {
+            const canvases = document.querySelectorAll('.drawing-canvas');
+            for (let canvas of canvases) {
+                const rect = canvas.getBoundingClientRect();
+                if (rect.top < window.innerHeight && rect.bottom > 0) {
+                    return canvas;
+                }
+            }
+            return null;
+        }
+
+        function undo() {
+            const visibleCanvas = getVisibleCanvas();
+            if (!visibleCanvas) return;
+
+            const pageNumber = parseInt(visibleCanvas.dataset.pageNumber);
+            if (pathsByPage[pageNumber] && pathsByPage[pageNumber].length > 0) {
+                const removedPath = pathsByPage[pageNumber].pop();
+                if (!redoStackByPage[pageNumber]) {
+                    redoStackByPage[pageNumber] = [];
+                }
+                redoStackByPage[pageNumber].push(removedPath);
+
+                redrawCanvas(visibleCanvas);
+                saveDrawings();
+            }
+        }
+
+        function redo() {
+            const visibleCanvas = getVisibleCanvas();
+            if (!visibleCanvas) return;
+
+            const pageNumber = parseInt(visibleCanvas.dataset.pageNumber);
+            if (redoStackByPage[pageNumber] && redoStackByPage[pageNumber].length > 0) {
+                const pathToRestore = redoStackByPage[pageNumber].pop();
+                if (!pathsByPage[pageNumber]) {
+                    pathsByPage[pageNumber] = [];
+                }
+                pathsByPage[pageNumber].push(pathToRestore);
+
+                redrawCanvas(visibleCanvas);
+                saveDrawings();
+            }
+        }
+
+        function saveDrawings() {
+            localStorage.setItem('drawings', JSON.stringify(pathsByPage));
+            localStorage.setItem('redoStack', JSON.stringify(redoStackByPage));
+        }
+
+        penBtn.addEventListener('click', () => {
+            currentMode = 'pen';
+            penBtn.style.backgroundColor = '#ddd';
+            eraserBtn.style.backgroundColor = '';
+        });
+
+        eraserBtn.addEventListener('click', () => {
+            currentMode = 'eraser';
+            eraserBtn.style.backgroundColor = '#ddd';
+            penBtn.style.backgroundColor = '';
+        });
+
+        undoBtn.addEventListener('click', undo);
+        redoBtn.addEventListener('click', redo);
+        restorePositionBtn.addEventListener('click', restoreScrollPosition);
+
+        window.addEventListener('beforeunload', function () {
+            saveScrollPosition();
+        });
+
+        penBtn.style.backgroundColor = '#ddd';
+        loadPDF().catch(console.error);
+        window.addEventListener('scroll', function () {
+            saveScrollPosition();
+            checkLoadMore();
+        });
+
+        window.addEventListener('resize', checkLoadMore);
+    </script>
+</body>
+
+</html>

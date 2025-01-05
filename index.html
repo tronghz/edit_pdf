@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <title>PDF Viewer với Canvas</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #fff1f2;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .tools {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            padding: 12px 20px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            box-shadow: 0 4px 12px rgba(251, 113, 133, 0.15);
+            z-index: 1000;
+        }
+
+        .tools button {
+            padding: 10px 18px;
+            border: none;
+            border-radius: 8px;
+            background-color: #ffe4e6;
+            color: #be123c;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+
+        .tools button:hover {
+            background-color: #fecdd3;
+            transform: translateY(-1px);
+        }
+
+        .tools button.active {
+            background-color: #fb7185;
+            color: white;
+        }
+
+        .tools input[type="color"] {
+            width: 40px;
+            height: 40px;
+            padding: 0;
+            border: none;
+            border-radius: 6px;
+            background: none;
+            cursor: pointer;
+        }
+
+        .tools input[type="color"]::-webkit-color-swatch-wrapper {
+            padding: 0;
+        }
+
+        .tools input[type="color"]::-webkit-color-swatch {
+            border: none;
+            border-radius: 6px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 80px auto 40px;
+            padding: 0 20px;
+        }
+
+        .page-container {
+            position: relative;
+            margin-bottom: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+            overflow: hidden;
+        }
+
+        .pdf-render,
+        .drawing-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        .pdf-render {
+            z-index: 1;
+        }
+
+        .drawing-canvas {
+            z-index: 2;
+            cursor: crosshair;
+        }
+
+        /* Loading indicator */
+        .loading {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Responsive design */
+        @media (max-width: 768px) {
+            .container {
+                padding: 0 10px;
+            }
+
+            .tools {
+                padding: 8px 10px;
+                flex-wrap: wrap;
+            }
+
+            .tools button {
+                padding: 6px 12px;
+                font-size: 13px;
+            }
+        }
+
+        /* Cập nhật CSS cho chế độ toàn màn hình */
+        .fullscreen-mode .container {
+            max-width: 100%;
+            margin: 60px auto 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            /* Căn giữa theo chiều ngang */
+        }
+
+        .fullscreen-mode .page-container {
+            border-radius: 0;
+            margin-bottom: 10px;
+            /* Thêm max-width để giới hạn chiều rộng tối đa khi màn hình quá lớn */
+            max-width: 1200px;
+            /* Hoặc một giá trị phù hợp với nội dung của bạn */
+            width: 90%;
+            /* Để tránh page bị quá sát mép màn hình */
+        }
+
+        /* Thêm media query cho màn hình lớn */
+        @media (min-width: 1400px) {
+            .fullscreen-mode .page-container {
+                width: 80%;
+                /* Giảm width trên màn hình lớn */
+            }
+        }
+
+        @media (min-width: 1800px) {
+            .fullscreen-mode .page-container {
+                width: 70%;
+                /* Giảm width hơn nữa trên màn hình rất lớn */
+            }
+        }
+
+        /* Đảm bảo canvas vẫn giữ tỷ lệ đúng */
+        .fullscreen-mode .pdf-render,
+        .fullscreen-mode .drawing-canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="tools">
+        <input type="color" id="color-picker" value="#000000" title="Chọn màu">
+        <button id="pen-btn" class="active">Bút vẽ</button>
+        <button id="eraser-btn">Tẩy</button>
+        <button id="undo-btn">⟲ Hoàn tác</button>
+        <button id="redo-btn">⟳ Làm lại</button>
+        <button id="restore-position-btn">↩ Vị trí cũ</button>
+        <button id="fullscreen-btn">⛶ Toàn màn hình</button>
+    </div>
+    <div class="container" id="pages-container"></div>
+    <div class="loading" id="loading-indicator">Đang tải thêm trang...</div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js';
+
+        // Các biến chính
+        const pagesContainer = document.getElementById('pages-container');
+        const colorPicker = document.getElementById('color-picker');
+        const undoBtn = document.getElementById('undo-btn');
+        const penBtn = document.getElementById('pen-btn');
+        const eraserBtn = document.getElementById('eraser-btn');
+        const restorePositionBtn = document.getElementById('restore-position-btn');
+        const redoBtn = document.getElementById('redo-btn');
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+
+        // Các biến trạng thái
+        let currentMode = 'pen';
+        let pdfDoc = null;
+        let pathsByPage = {};
+        let redoStackByPage = {};
+        let activeCanvas = null;
+        let currentPath = [];
+        let isDrawing = false;
+        let lastScrollPosition = 0;
+        let currentLoadedPage = 0;
+        const PAGES_PER_LOAD = 5;
+        let isLoading = false;
+        let isFullscreen = false;
+
+        // Cache system
+        let canvasCache = new Map();
+        const CACHE_SIZE = 10;
+
+        // Action History System
+        const actionHistory = {
+            undoStack: new Map(),
+            redoStack: new Map(),
+            maxStackSize: 50,
+
+            addAction(pageNumber, action) {
+                if (!this.undoStack.has(pageNumber)) {
+                    this.undoStack.set(pageNumber, []);
+                }
+                const pageStack = this.undoStack.get(pageNumber);
+                pageStack.push(action);
+
+                if (pageStack.length > this.maxStackSize) {
+                    pageStack.shift();
+                }
+                this.redoStack.set(pageNumber, []);
+                this.saveToLocalStorage();
+            },
+
+            undo(pageNumber) {
+                if (!this.undoStack.has(pageNumber)) return null;
+                const pageStack = this.undoStack.get(pageNumber);
+                if (pageStack.length === 0) return null;
+
+                const action = pageStack.pop();
+                if (!this.redoStack.has(pageNumber)) {
+                    this.redoStack.set(pageNumber, []);
+                }
+                this.redoStack.get(pageNumber).push(action);
+                this.saveToLocalStorage();
+                return action;
+            },
+
+            redo(pageNumber) {
+                if (!this.redoStack.has(pageNumber)) return null;
+                const redoStack = this.redoStack.get(pageNumber);
+                if (redoStack.length === 0) return null;
+
+                const action = redoStack.pop();
+                this.addAction(pageNumber, action);
+                return action;
+            },
+
+            saveToLocalStorage() {
+                try {
+                    localStorage.setItem('actionHistory', JSON.stringify({
+                        undoStack: Array.from(this.undoStack.entries()),
+                        redoStack: Array.from(this.redoStack.entries())
+                    }));
+                } catch (error) {
+                    console.error('Error saving action history:', error);
+                }
+            },
+
+            loadFromLocalStorage() {
+                try {
+                    const saved = localStorage.getItem('actionHistory');
+                    if (saved) {
+                        const parsed = JSON.parse(saved);
+                        this.undoStack = new Map(parsed.undoStack);
+                        this.redoStack = new Map(parsed.redoStack);
+                    }
+                } catch (error) {
+                    console.error('Error loading action history:', error);
+                }
+            }
+        };
+
+        // Spatial Grid System
+        const spatialGrid = {
+            cellSize: 20,
+            grid: new Map(),
+
+            addPath(path, pageNumber) {
+                const gridKey = `${pageNumber}`;
+                if (!this.grid.has(gridKey)) {
+                    this.grid.set(gridKey, new Map());
+                }
+
+                const pageGrid = this.grid.get(gridKey);
+                path.forEach((point, index) => {
+                    if (index === 0) return;
+
+                    const cellX = Math.floor(point.x / this.cellSize);
+                    const cellY = Math.floor(point.y / this.cellSize);
+                    const cellKey = `${cellX},${cellY}`;
+
+                    if (!pageGrid.has(cellKey)) {
+                        pageGrid.set(cellKey, new Set());
+                    }
+                    pageGrid.get(cellKey).add(path);
+                });
+            },
+
+            findNearbyPaths(x, y, pageNumber) {
+                const cellX = Math.floor(x / this.cellSize);
+                const cellY = Math.floor(y / this.cellSize);
+                const gridKey = `${pageNumber}`;
+
+                if (!this.grid.has(gridKey)) return new Set();
+
+                const pageGrid = this.grid.get(gridKey);
+                const cellKey = `${cellX},${cellY}`;
+                return pageGrid.get(cellKey) || new Set();
+            },
+
+            clearPage(pageNumber) {
+                this.grid.delete(`${pageNumber}`);
+            }
+        };
+
+        function toggleFullScreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    console.error(`Error attempting to enable fullscreen: ${err.message}`);
+                });
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                }
+            }
+        }
+
+        // Thêm event listeners cho fullscreen
+        fullscreenBtn.addEventListener('click', () => {
+            toggleFullScreen();
+        });
+
+        document.addEventListener('fullscreenchange', () => {
+            isFullscreen = !!document.fullscreenElement;
+            document.body.classList.toggle('fullscreen-mode', isFullscreen);
+
+            // Cập nhật icon và text của nút
+            if (isFullscreen) {
+                fullscreenBtn.textContent = '⛶ Thu nhỏ';
+            } else {
+                fullscreenBtn.textContent = '⛶ Toàn màn hình';
+            }
+
+            // Vẽ lại canvas để đảm bảo hiển thị đúng
+            const visibleCanvas = getVisibleCanvas();
+            if (visibleCanvas) {
+                redrawCanvas(visibleCanvas);
+            }
+        });
+
+        // Xử lý khi nhấn ESC để thoát fullscreen
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && isFullscreen) {
+                document.exitFullscreen();
+            }
+        });
+
+
+        // Canvas Management Functions
+        function manageCanvasCache(pageNumber) {
+            if (canvasCache.size > CACHE_SIZE) {
+                const oldestPage = canvasCache.keys().next().value;
+                canvasCache.delete(oldestPage);
+            }
+
+            const canvas = document.querySelector(`canvas[data-page-number="${pageNumber}"]`);
+            if (canvas) {
+                canvasCache.set(pageNumber, canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height));
+            }
+        }
+
+        async function loadPDF() {
+            try {
+                const loadingTask = pdfjsLib.getDocument('khoa_hoc.pdf');
+                pdfDoc = await loadingTask.promise;
+
+                actionHistory.loadFromLocalStorage();
+
+                const savedPaths = localStorage.getItem('drawings');
+                if (savedPaths) {
+                    pathsByPage = JSON.parse(savedPaths);
+                    Object.entries(pathsByPage).forEach(([pageNumber, paths]) => {
+                        paths.forEach(path => spatialGrid.addPath(path, parseInt(pageNumber)));
+                    });
+                }
+
+                await loadNextPages();
+            } catch (error) {
+                console.error('Error loading PDF:', error);
+            }
+        }
+
+        async function loadNextPages() {
+            if (isLoading || currentLoadedPage >= pdfDoc.numPages) return;
+
+            isLoading = true;
+            const loadingIndicator = document.getElementById('loading-indicator');
+            if (loadingIndicator) loadingIndicator.classList.add('active');
+
+            try {
+                const startPage = currentLoadedPage + 1;
+                const endPage = Math.min(startPage + PAGES_PER_LOAD - 1, pdfDoc.numPages);
+
+                for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+                    await renderPage(pageNum);
+                }
+
+                currentLoadedPage = endPage;
+            } catch (error) {
+                console.error('Error loading pages:', error);
+            } finally {
+                isLoading = false;
+                if (loadingIndicator) loadingIndicator.classList.remove('active');
+            }
+        }
+
+        async function renderPage(pageNumber) {
+            try {
+                const page = await pdfDoc.getPage(pageNumber);
+                const viewport = page.getViewport({ scale: 1.5 });
+
+                const pageContainer = document.createElement('div');
+                pageContainer.className = 'page-container';
+                pageContainer.style.width = viewport.width + 'px';
+                pageContainer.style.height = viewport.height + 'px';
+
+                const pdfCanvas = document.createElement('canvas');
+                pdfCanvas.className = 'pdf-render';
+                pdfCanvas.width = viewport.width;
+                pdfCanvas.height = viewport.height;
+
+                const drawingCanvas = document.createElement('canvas');
+                drawingCanvas.className = 'drawing-canvas';
+                drawingCanvas.width = viewport.width;
+                drawingCanvas.height = viewport.height;
+                drawingCanvas.dataset.pageNumber = pageNumber;
+
+                pageContainer.appendChild(pdfCanvas);
+                pageContainer.appendChild(drawingCanvas);
+                pagesContainer.appendChild(pageContainer);
+
+                const renderContext = {
+                    canvasContext: pdfCanvas.getContext('2d'),
+                    viewport: viewport
+                };
+
+                await page.render(renderContext);
+                setupDrawingEvents(drawingCanvas);
+
+                if (!pathsByPage[pageNumber]) {
+                    pathsByPage[pageNumber] = [];
+                }
+
+                redrawCanvas(drawingCanvas);
+                manageCanvasCache(pageNumber);
+
+            } catch (error) {
+                console.error(`Error rendering page ${pageNumber}:`, error);
+            }
+        }
+
+        // Drawing Event Handlers
+        function startDrawing(e) {
+            isDrawing = true;
+            activeCanvas = e.target;
+            const rect = activeCanvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            if (currentMode === 'pen') {
+                currentPath = [{
+                    x: x,
+                    y: y,
+                    mode: currentMode,
+                    color: colorPicker.value
+                }];
+            }
+        }
+
+        function handleMouseMove(e) {
+            if (!isDrawing || !activeCanvas) return;
+
+            const rect = activeCanvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const pageNumber = parseInt(activeCanvas.dataset.pageNumber);
+
+            if (!activeCanvas.lastMove || Date.now() - activeCanvas.lastMove > 16) {
+                activeCanvas.lastMove = Date.now();
+
+                if (currentMode === 'eraser') {
+                    const nearbyPaths = spatialGrid.findNearbyPaths(x, y, pageNumber);
+                    let erasedPath = false;
+
+                    nearbyPaths.forEach(path => {
+                        if (isPointInPath(path, x, y)) {
+                            const pathIndex = pathsByPage[pageNumber].indexOf(path);
+                            if (pathIndex !== -1) {
+                                actionHistory.addAction(pageNumber, {
+                                    type: 'erase',
+                                    path: path,
+                                    index: pathIndex
+                                });
+                                pathsByPage[pageNumber].splice(pathIndex, 1);
+                                erasedPath = true;
+                            }
+                        }
+                    });
+
+                    if (erasedPath) {
+                        spatialGrid.clearPage(pageNumber);
+                        pathsByPage[pageNumber].forEach(path => spatialGrid.addPath(path, pageNumber));
+                        redrawCanvas(activeCanvas);
+                        saveDrawings();
+                    }
+                } else if (currentMode === 'pen') {
+                    currentPath.push({
+                        x: x,
+                        y: y,
+                        mode: currentMode,
+                        color: colorPicker.value
+                    });
+
+                    requestAnimationFrame(() => {
+                        redrawCanvas(activeCanvas);
+                    });
+                }
+            }
+        }
+
+        function stopDrawing() {
+            if (!isDrawing || !activeCanvas) return;
+
+            const pageNumber = parseInt(activeCanvas.dataset.pageNumber);
+            if (currentMode === 'pen' && currentPath.length > 0) {
+                pathsByPage[pageNumber].push(currentPath);
+                spatialGrid.addPath(currentPath, pageNumber);
+                actionHistory.addAction(pageNumber, {
+                    type: 'draw',
+                    path: currentPath
+                });
+                saveDrawings();
+            }
+
+            isDrawing = false;
+            activeCanvas = null;
+            currentPath = [];
+        }
+
+        function setupDrawingEvents(canvas) {
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing);
+        }
+
+        // Utility Functions
+        function redrawCanvas(canvas) {
+            const ctx = canvas.getContext('2d');
+            const pageNumber = parseInt(canvas.dataset.pageNumber);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const allPaths = [...(pathsByPage[pageNumber] || [])];
+            if (isDrawing && currentPath.length > 0) {
+                allPaths.push(currentPath);
+            }
+
+            allPaths.forEach(path => {
+                if (!path || path.length < 2) return;
+
+                ctx.beginPath();
+                ctx.moveTo(path[0].x, path[0].y);
+                ctx.strokeStyle = path[0].color;
+                ctx.lineWidth = 2;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                for (let i = 1; i < path.length; i++) {
+                    ctx.lineTo(path[i].x, path[i].y);
+                }
+                ctx.stroke();
+            });
+
+            manageCanvasCache(pageNumber);
+        }
+
+        function saveDrawings() {
+            try {
+                localStorage.setItem('drawings', JSON.stringify(pathsByPage));
+            } catch (error) {
+                console.error('Error saving drawings:', error);
+            }
+        }
+
+        function isPointInPath(path, x, y) {
+            const tolerance = 5;
+            for (let i = 1; i < path.length; i++) {
+                const x1 = path[i - 1].x;
+                const y1 = path[i - 1].y;
+                const x2 = path[i].x;
+                const y2 = path[i].y;
+
+                const distance = pointToLineDistance(x, y, x1, y1, x2, y2);
+                if (distance < tolerance) return true;
+            }
+            return false;
+        }
+
+        function pointToLineDistance(x, y, x1, y1, x2, y2) {
+            const A = x - x1;
+            const B = y - y1;
+            const C = x2 - x1;
+            const D = y2 - y1;
+
+            const dot = A * C + B * D;
+            const lenSq = C * C + D * D;
+            let param = -1;
+
+            if (lenSq !== 0) param = dot / lenSq;
+
+            let xx, yy;
+
+            if (param < 0) {
+                xx = x1;
+                yy = y1;
+            } else if (param > 1) {
+                xx = x2;
+                yy = y2;
+            } else {
+                xx = x1 + param * C;
+                yy = y1 + param * D;
+            }
+
+            const dx = x - xx;
+            const dy = y - yy;
+
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        // Event Listeners
+        penBtn.addEventListener('click', () => {
+            currentMode = 'pen';
+            penBtn.classList.add('active');
+            eraserBtn.classList.remove('active');
+        });
+
+        eraserBtn.addEventListener('click', () => {
+            currentMode = 'eraser';
+            eraserBtn.classList.add('active');
+            penBtn.classList.remove('active');
+        });
+
+        undoBtn.addEventListener('click', () => {
+            const visibleCanvas = getVisibleCanvas();
+            if (!visibleCanvas) return;
+
+            const pageNumber = parseInt(visibleCanvas.dataset.pageNumber);
+            const undoneAction = actionHistory.undo(pageNumber);
+
+            if (undoneAction) {
+                if (undoneAction.type === 'draw') {
+                    pathsByPage[pageNumber].pop();
+                } else if (undoneAction.type === 'erase') {
+                    pathsByPage[pageNumber].splice(undoneAction.index, 0, undoneAction.path);
+                }
+
+                spatialGrid.clearPage(pageNumber);
+                pathsByPage[pageNumber].forEach(path => spatialGrid.addPath(path, pageNumber));
+                redrawCanvas(visibleCanvas);
+                saveDrawings();
+            }
+        });
+
+        redoBtn.addEventListener('click', () => {
+            const visibleCanvas = getVisibleCanvas();
+            if (!visibleCanvas) return;
+
+            const pageNumber = parseInt(visibleCanvas.dataset.pageNumber);
+            const redoneAction = actionHistory.redo(pageNumber);
+
+            if (redoneAction) {
+                if (redoneAction.type === 'draw') {
+                    pathsByPage[pageNumber].push(redoneAction.path);
+                } else if (redoneAction.type === 'erase') {
+                    pathsByPage[pageNumber].splice(redoneAction.index, 1);
+                }
+
+                spatialGrid.clearPage(pageNumber);
+                pathsByPage[pageNumber].forEach(path => spatialGrid.addPath(path, pageNumber));
+                redrawCanvas(visibleCanvas);
+                saveDrawings();
+            }
+        });
+
+        restorePositionBtn.addEventListener('click', restoreScrollPosition);
+
+        window.addEventListener('scroll', () => {
+            saveScrollPosition();
+            checkLoadMore();
+        });
+
+        window.addEventListener('resize', checkLoadMore);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 'z') {
+                e.preventDefault();
+                undoBtn.click();
+            }
+            if (e.ctrlKey && e.key === 'y') {
+                e.preventDefault();
+                redoBtn.click();
+            }
+        });
+
+        // Auto-save timer
+        setInterval(() => {
+            if (Object.keys(pathsByPage).length > 0) {
+                saveDrawings();
+                actionHistory.saveToLocalStorage();
+            }
+        }, 30000);
+
+        // Error handling
+        window.onerror = function (msg, url, lineNo, columnNo, error) {
+            console.error('Error: ', { msg, url, lineNo, columnNo, error });
+            return false;
+        };
+
+        window.addEventListener('unhandledrejection', function (event) {
+            console.error('Unhandled promise rejection:', event.reason);
+        });
+
+        // Helper functions
+        function getVisibleCanvas() {
+            const canvases = document.querySelectorAll('.drawing-canvas');
+            for (let canvas of canvases) {
+                const rect = canvas.getBoundingClientRect();
+                if (rect.top < window.innerHeight && rect.bottom > 0) {
+                    return canvas;
+                }
+            }
+            return null;
+        }
+
+        function saveScrollPosition() {
+            lastScrollPosition = window.scrollY;
+            localStorage.setItem('lastScrollPosition', lastScrollPosition);
+        }
+
+        async function restoreScrollPosition() {
+            try {
+                const savedPosition = localStorage.getItem('lastScrollPosition');
+                if (!savedPosition) return;
+
+                const targetPosition = parseInt(savedPosition);
+                const pageHeight = document.querySelector('.page-container')?.offsetHeight || 0;
+                if (pageHeight === 0) return;
+
+                const pagesNeeded = Math.ceil((targetPosition + window.innerHeight) / pageHeight);
+
+                while (currentLoadedPage < pagesNeeded && currentLoadedPage < pdfDoc.numPages) {
+                    await loadNextPages();
+                }
+
+                window.scrollTo({
+                    top: targetPosition,
+                    behavior: 'smooth'
+                });
+            } catch (error) {
+                console.error('Error restoring scroll position:', error);
+            }
+        }
+
+        function checkLoadMore() {
+            if (isLoading || currentLoadedPage >= pdfDoc.numPages) return;
+
+            const lastPageContainer = pagesContainer.lastElementChild;
+            if (!lastPageContainer) return;
+
+            const rect = lastPageContainer.getBoundingClientRect();
+            const threshold = window.innerHeight * 2;
+
+            if (rect.bottom - window.innerHeight < threshold) {
+                loadNextPages();
+            }
+        }
+
+        // Initialize
+        penBtn.classList.add('active');
+        loadPDF().catch(console.error);
+        // Thêm vào đầu file JavaScript
+        const cursorDot = document.createElement('div');
+        cursorDot.className = 'cursor-dot';
+        document.body.appendChild(cursorDot);
+
+        // Thêm vào setupDrawingEvents
+        function setupDrawingEvents(canvas) {
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing);
+
+            // Thêm xử lý cho con trỏ tùy chỉnh
+            canvas.addEventListener('mousemove', (e) => {
+                cursorDot.style.display = 'block';
+                cursorDot.style.left = e.clientX + 'px';
+                cursorDot.style.top = e.clientY + 'px';
+
+                // Thay đổi màu dot theo màu được chọn khi đang ở chế độ pen
+                if (currentMode === 'pen') {
+                    cursorDot.style.backgroundColor = colorPicker.value;
+                } else {
+                    cursorDot.style.backgroundColor = '#000';
+                }
+            });
+
+            canvas.addEventListener('mouseenter', () => {
+                cursorDot.style.display = 'block';
+            });
+
+            canvas.addEventListener('mouseleave', () => {
+                cursorDot.style.display = 'none';
+            });
+        }
+
+        // Thêm xử lý khi thay đổi công cụ
+        penBtn.addEventListener('click', () => {
+            currentMode = 'pen';
+            penBtn.classList.add('active');
+            eraserBtn.classList.remove('active');
+            cursorDot.style.backgroundColor = colorPicker.value;
+        });
+
+        eraserBtn.addEventListener('click', () => {
+            currentMode = 'eraser';
+            eraserBtn.classList.add('active');
+            penBtn.classList.remove('active');
+            cursorDot.style.backgroundColor = '#000';
+        });
+
+        // Thêm xử lý khi thay đổi màu
+        colorPicker.addEventListener('input', () => {
+            if (currentMode === 'pen') {
+                cursorDot.style.backgroundColor = colorPicker.value;
+            }
+        });
+
+        // Ẩn cursor dot khi ra khỏi window
+        document.addEventListener('mouseleave', () => {
+            cursorDot.style.display = 'none';
+        });
+    </script>
+</body>
+
+</html>
