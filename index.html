@@ -74,9 +74,18 @@
         }
 
         .container {
-            max-width: 1000px;
-            margin: 80px auto 40px;
-            padding: 0 20px;
+            max-width: 2000px;
+            /* Tăng max-width để chứa 2 trang */
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+        }
+
+        .page-spread {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
         }
 
         .page-container {
@@ -199,6 +208,12 @@
             height: 100%;
             object-fit: contain;
         }
+
+        .fullscreen-mode .page-spread {
+            width: 95%;
+            max-width: 2400px;
+            justify-content: center;
+        }
     </style>
 </head>
 
@@ -238,7 +253,7 @@
         let isDrawing = false;
         let lastScrollPosition = 0;
         let currentLoadedPage = 0;
-        const PAGES_PER_LOAD = 5;
+        const PAGES_PER_LOAD = 4;
         let isLoading = false;
         let isFullscreen = false;
 
@@ -446,8 +461,19 @@
                 const startPage = currentLoadedPage + 1;
                 const endPage = Math.min(startPage + PAGES_PER_LOAD - 1, pdfDoc.numPages);
 
-                for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-                    await renderPage(pageNum);
+                for (let pageNum = startPage; pageNum <= endPage; pageNum += 2) {
+                    const pageSpread = document.createElement('div');
+                    pageSpread.className = 'page-spread';
+
+                    // Render trang bên trái
+                    await renderPage(pageNum, pageSpread);
+
+                    // Render trang bên phải (nếu còn)
+                    if (pageNum + 1 <= endPage) {
+                        await renderPage(pageNum + 1, pageSpread);
+                    }
+
+                    pagesContainer.appendChild(pageSpread);
                 }
 
                 currentLoadedPage = endPage;
@@ -459,7 +485,7 @@
             }
         }
 
-        async function renderPage(pageNumber) {
+        async function renderPage(pageNumber, pageSpread) {
             try {
                 const page = await pdfDoc.getPage(pageNumber);
                 const viewport = page.getViewport({ scale: 1.5 });
@@ -482,7 +508,7 @@
 
                 pageContainer.appendChild(pdfCanvas);
                 pageContainer.appendChild(drawingCanvas);
-                pagesContainer.appendChild(pageContainer);
+                pageSpread.appendChild(pageContainer);
 
                 const renderContext = {
                     canvasContext: pdfCanvas.getContext('2d'),
@@ -790,6 +816,7 @@
 
         function saveScrollPosition() {
             lastScrollPosition = window.scrollY;
+            // Lưu ngay lập tức không chờ interval
             localStorage.setItem('lastScrollPosition', lastScrollPosition);
         }
 
@@ -799,19 +826,32 @@
                 if (!savedPosition) return;
 
                 const targetPosition = parseInt(savedPosition);
-                const pageHeight = document.querySelector('.page-container')?.offsetHeight || 0;
-                if (pageHeight === 0) return;
 
-                const pagesNeeded = Math.ceil((targetPosition + window.innerHeight) / pageHeight);
+                // Lấy chiều cao của 1 spread (2 trang)
+                const pageSpread = document.querySelector('.page-spread');
+                if (!pageSpread) return;
+                const spreadHeight = pageSpread.offsetHeight;
 
+                if (spreadHeight === 0) return;
+
+                // Tính số spread cần thiết để load
+                const spreadsNeeded = Math.ceil((targetPosition + window.innerHeight) / spreadHeight);
+                // Chuyển đổi số spread thành số trang
+                const pagesNeeded = spreadsNeeded * 2;
+
+                // Load thêm trang nếu cần
                 while (currentLoadedPage < pagesNeeded && currentLoadedPage < pdfDoc.numPages) {
                     await loadNextPages();
                 }
 
-                window.scrollTo({
-                    top: targetPosition,
-                    behavior: 'smooth'
-                });
+                // Thêm một setTimeout nhỏ để đảm bảo tất cả trang đã render xong
+                setTimeout(() => {
+                    window.scrollTo({
+                        top: targetPosition,
+                        behavior: 'smooth'
+                    });
+                }, 100);
+
             } catch (error) {
                 console.error('Error restoring scroll position:', error);
             }
