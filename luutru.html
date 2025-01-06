@@ -223,8 +223,6 @@
         <input type="color" id="color-picker" value="#000000" title="Chọn màu">
         <button id="pen-btn" class="active">Bút vẽ</button>
         <button id="eraser-btn">Tẩy</button>
-        <button id="undo-btn">⟲ Hoàn tác</button>
-        <button id="redo-btn">⟳ Làm lại</button>
         <button id="restore-position-btn">↩ Vị trí cũ</button>
         <button id="fullscreen-btn">⛶ Toàn màn hình</button>
     </div>
@@ -238,18 +236,15 @@
         // Các biến chính
         const pagesContainer = document.getElementById('pages-container');
         const colorPicker = document.getElementById('color-picker');
-        const undoBtn = document.getElementById('undo-btn');
         const penBtn = document.getElementById('pen-btn');
         const eraserBtn = document.getElementById('eraser-btn');
         const restorePositionBtn = document.getElementById('restore-position-btn');
-        const redoBtn = document.getElementById('redo-btn');
         const fullscreenBtn = document.getElementById('fullscreen-btn');
 
         // Các biến trạng thái
         let currentMode = 'pen';
         let pdfDoc = null;
         let pathsByPage = {};
-        let redoStackByPage = {};
         let activeCanvas = null;
         let currentPath = [];
         let isDrawing = false;
@@ -268,74 +263,6 @@
         const STORE_NAME = 'pdfs';
         const DB_VERSION = 1;
 
-        // Action History System
-        const actionHistory = {
-            undoStack: new Map(),
-            redoStack: new Map(),
-            maxStackSize: 50,
-
-            addAction(pageNumber, action) {
-                if (!this.undoStack.has(pageNumber)) {
-                    this.undoStack.set(pageNumber, []);
-                }
-                const pageStack = this.undoStack.get(pageNumber);
-                pageStack.push(action);
-
-                if (pageStack.length > this.maxStackSize) {
-                    pageStack.shift();
-                }
-                this.redoStack.set(pageNumber, []);
-                this.saveToLocalStorage();
-            },
-
-            undo(pageNumber) {
-                if (!this.undoStack.has(pageNumber)) return null;
-                const pageStack = this.undoStack.get(pageNumber);
-                if (pageStack.length === 0) return null;
-
-                const action = pageStack.pop();
-                if (!this.redoStack.has(pageNumber)) {
-                    this.redoStack.set(pageNumber, []);
-                }
-                this.redoStack.get(pageNumber).push(action);
-                this.saveToLocalStorage();
-                return action;
-            },
-
-            redo(pageNumber) {
-                if (!this.redoStack.has(pageNumber)) return null;
-                const redoStack = this.redoStack.get(pageNumber);
-                if (redoStack.length === 0) return null;
-
-                const action = redoStack.pop();
-                this.addAction(pageNumber, action);
-                return action;
-            },
-
-            saveToLocalStorage() {
-                try {
-                    localStorage.setItem('actionHistory', JSON.stringify({
-                        undoStack: Array.from(this.undoStack.entries()),
-                        redoStack: Array.from(this.redoStack.entries())
-                    }));
-                } catch (error) {
-                    console.error('Error saving action history:', error);
-                }
-            },
-
-            loadFromLocalStorage() {
-                try {
-                    const saved = localStorage.getItem('actionHistory');
-                    if (saved) {
-                        const parsed = JSON.parse(saved);
-                        this.undoStack = new Map(parsed.undoStack);
-                        this.redoStack = new Map(parsed.redoStack);
-                    }
-                } catch (error) {
-                    console.error('Error loading action history:', error);
-                }
-            }
-        };
 
         // Spatial Grid System
         const spatialGrid = {
@@ -414,7 +341,7 @@
 
                 pdfDoc = await pdfjsLib.getDocument({ data: pdfData }).promise;
 
-                actionHistory.loadFromLocalStorage();
+
                 const savedPaths = localStorage.getItem('drawings');
                 if (savedPaths) {
                     pathsByPage = JSON.parse(savedPaths);
@@ -574,11 +501,7 @@
                         if (isPointInPath(path, x, y)) {
                             const pathIndex = pathsByPage[pageNumber].indexOf(path);
                             if (pathIndex !== -1) {
-                                actionHistory.addAction(pageNumber, {
-                                    type: 'erase',
-                                    path: path,
-                                    index: pathIndex
-                                });
+
                                 pathsByPage[pageNumber].splice(pathIndex, 1);
                                 erasedPath = true;
                             }
@@ -613,10 +536,6 @@
             if (currentMode === 'pen' && currentPath.length > 0) {
                 pathsByPage[pageNumber].push(currentPath);
                 spatialGrid.addPath(currentPath, pageNumber);
-                actionHistory.addAction(pageNumber, {
-                    type: 'draw',
-                    path: currentPath
-                });
                 saveDrawings();
             }
 
@@ -799,47 +718,6 @@
             cursorDot.style.backgroundColor = '#000';
         });
 
-        undoBtn.addEventListener('click', () => {
-            const visibleCanvas = getVisibleCanvas();
-            if (!visibleCanvas) return;
-
-            const pageNumber = parseInt(visibleCanvas.dataset.pageNumber);
-            const undoneAction = actionHistory.undo(pageNumber);
-
-            if (undoneAction) {
-                if (undoneAction.type === 'draw') {
-                    pathsByPage[pageNumber].pop();
-                } else if (undoneAction.type === 'erase') {
-                    pathsByPage[pageNumber].splice(undoneAction.index, 0, undoneAction.path);
-                }
-
-                spatialGrid.clearPage(pageNumber);
-                pathsByPage[pageNumber].forEach(path => spatialGrid.addPath(path, pageNumber));
-                redrawCanvas(visibleCanvas);
-                saveDrawings();
-            }
-        });
-
-        redoBtn.addEventListener('click', () => {
-            const visibleCanvas = getVisibleCanvas();
-            if (!visibleCanvas) return;
-
-            const pageNumber = parseInt(visibleCanvas.dataset.pageNumber);
-            const redoneAction = actionHistory.redo(pageNumber);
-
-            if (redoneAction) {
-                if (redoneAction.type === 'draw') {
-                    pathsByPage[pageNumber].push(redoneAction.path);
-                } else if (redoneAction.type === 'erase') {
-                    pathsByPage[pageNumber].splice(redoneAction.index, 1);
-                }
-
-                spatialGrid.clearPage(pageNumber);
-                pathsByPage[pageNumber].forEach(path => spatialGrid.addPath(path, pageNumber));
-                redrawCanvas(visibleCanvas);
-                saveDrawings();
-            }
-        });
 
         fullscreenBtn.addEventListener('click', () => {
             toggleFullScreen();
@@ -884,14 +762,6 @@
             if (e.key === 'Escape' && isFullscreen) {
                 document.exitFullscreen();
             }
-            if (e.ctrlKey && e.key === 'z') {
-                e.preventDefault();
-                undoBtn.click();
-            }
-            if (e.ctrlKey && e.key === 'y') {
-                e.preventDefault();
-                redoBtn.click();
-            }
         });
 
         // Initialize
@@ -907,13 +777,25 @@
             setInterval(() => {
                 if (Object.keys(pathsByPage).length > 0) {
                     saveDrawings();
-                    actionHistory.saveToLocalStorage();
+
                 }
             }, 30000);
         }
 
         // Start the application
         init();
+
+        function getVisibleCanvas() {
+            const canvases = document.querySelectorAll('.drawing-canvas');
+            for (const canvas of canvases) {
+                const rect = canvas.getBoundingClientRect();
+                if (rect.top < window.innerHeight && rect.bottom > 0) {
+                    return canvas;
+                }
+            }
+            return null;
+        }
+
 
     </script>
 </body>

@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>PDF Viewer với Canvas</title>
+    <title>PDF Chill với Chonghz</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/idb@7/build/umd.js"></script>
     <style>
@@ -215,6 +215,30 @@
             max-width: 2400px;
             justify-content: center;
         }
+
+        /* Add this to the existing CSS */
+        .tools select {
+            padding: 8px 12px;
+            border: 1px solid #ffe4e6;
+            border-radius: 8px;
+            background-color: white;
+            color: #be123c;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .tools select:hover {
+            background-color: #ffe4e6;
+        }
+
+        #upload-btn {
+            background-color: #be123c;
+            color: white;
+        }
+
+        #upload-btn:hover {
+            background-color: #9f1239;
+        }
     </style>
 </head>
 
@@ -223,10 +247,15 @@
         <input type="color" id="color-picker" value="#000000" title="Chọn màu">
         <button id="pen-btn" class="active">Bút vẽ</button>
         <button id="eraser-btn">Tẩy</button>
-        <button id="undo-btn">⟲ Hoàn tác</button>
-        <button id="redo-btn">⟳ Làm lại</button>
         <button id="restore-position-btn">↩ Vị trí cũ</button>
         <button id="fullscreen-btn">⛶ Toàn màn hình</button>
+        <select id="default-pdf-select">
+            <option value="khoa_hoc.pdf">Khoa học</option>
+            <option value="#">Up sau</option>
+            <option value="#">Up sau</option>
+        </select>
+        <input type="file" id="pdf-upload" accept=".pdf" style="display: none;">
+        <button id="upload-btn">Tải PDF khác</button>
     </div>
     <div class="container" id="pages-container"></div>
     <div class="loading" id="loading-indicator">Loading pages...</div>
@@ -238,18 +267,15 @@
         // Các biến chính
         const pagesContainer = document.getElementById('pages-container');
         const colorPicker = document.getElementById('color-picker');
-        const undoBtn = document.getElementById('undo-btn');
         const penBtn = document.getElementById('pen-btn');
         const eraserBtn = document.getElementById('eraser-btn');
         const restorePositionBtn = document.getElementById('restore-position-btn');
-        const redoBtn = document.getElementById('redo-btn');
         const fullscreenBtn = document.getElementById('fullscreen-btn');
 
         // Các biến trạng thái
         let currentMode = 'pen';
         let pdfDoc = null;
         let pathsByPage = {};
-        let redoStackByPage = {};
         let activeCanvas = null;
         let currentPath = [];
         let isDrawing = false;
@@ -268,74 +294,81 @@
         const STORE_NAME = 'pdfs';
         const DB_VERSION = 1;
 
-        // Action History System
-        const actionHistory = {
-            undoStack: new Map(),
-            redoStack: new Map(),
-            maxStackSize: 50,
 
-            addAction(pageNumber, action) {
-                if (!this.undoStack.has(pageNumber)) {
-                    this.undoStack.set(pageNumber, []);
-                }
-                const pageStack = this.undoStack.get(pageNumber);
-                pageStack.push(action);
+        // Add these variables at the top with other variables
+        const defaultPdfSelect = document.getElementById('default-pdf-select');
+        const pdfUpload = document.getElementById('pdf-upload');
+        const uploadBtn = document.getElementById('upload-btn');
+        let currentPdfName = 'khoa_hoc.pdf';
 
-                if (pageStack.length > this.maxStackSize) {
-                    pageStack.shift();
-                }
-                this.redoStack.set(pageNumber, []);
-                this.saveToLocalStorage();
-            },
+        // Add these event listeners in the init() function
+        function initializeFileHandlers() {
+            defaultPdfSelect.addEventListener('change', async (e) => {
+                currentPdfName = e.target.value;
+                await loadNewPDF(currentPdfName);
+            });
 
-            undo(pageNumber) {
-                if (!this.undoStack.has(pageNumber)) return null;
-                const pageStack = this.undoStack.get(pageNumber);
-                if (pageStack.length === 0) return null;
+            uploadBtn.addEventListener('click', () => {
+                pdfUpload.click();
+            });
 
-                const action = pageStack.pop();
-                if (!this.redoStack.has(pageNumber)) {
-                    this.redoStack.set(pageNumber, []);
-                }
-                this.redoStack.get(pageNumber).push(action);
-                this.saveToLocalStorage();
-                return action;
-            },
-
-            redo(pageNumber) {
-                if (!this.redoStack.has(pageNumber)) return null;
-                const redoStack = this.redoStack.get(pageNumber);
-                if (redoStack.length === 0) return null;
-
-                const action = redoStack.pop();
-                this.addAction(pageNumber, action);
-                return action;
-            },
-
-            saveToLocalStorage() {
-                try {
-                    localStorage.setItem('actionHistory', JSON.stringify({
-                        undoStack: Array.from(this.undoStack.entries()),
-                        redoStack: Array.from(this.redoStack.entries())
-                    }));
-                } catch (error) {
-                    console.error('Error saving action history:', error);
-                }
-            },
-
-            loadFromLocalStorage() {
-                try {
-                    const saved = localStorage.getItem('actionHistory');
-                    if (saved) {
-                        const parsed = JSON.parse(saved);
-                        this.undoStack = new Map(parsed.undoStack);
-                        this.redoStack = new Map(parsed.redoStack);
+            pdfUpload.addEventListener('change', async (e) => {
+                if (e.target.files.length > 0) {
+                    const file = e.target.files[0];
+                    if (file.type === 'application/pdf') {
+                        await handleFileUpload(file);
+                    } else {
+                        alert('Vui lòng chọn file PDF');
                     }
-                } catch (error) {
-                    console.error('Error loading action history:', error);
                 }
+            });
+        }
+
+        // Add these new functions
+        async function loadNewPDF(pdfName) {
+            // Clear existing content
+            pagesContainer.innerHTML = '';
+            pathsByPage = {};
+            currentLoadedPage = 0;
+            spatialGrid.grid.clear();
+
+            // Reset scroll position
+            window.scrollTo(0, 0);
+
+            // Load the new PDF
+            await loadPDF(pdfName);
+        }
+
+        async function handleFileUpload(file) {
+            try {
+                const loadingIndicator = document.getElementById('loading-indicator');
+                loadingIndicator.classList.add('active');
+                loadingIndicator.textContent = 'Đang tải file...';
+
+                // Clear existing content
+                pagesContainer.innerHTML = '';
+                pathsByPage = {};
+                currentLoadedPage = 0;
+                spatialGrid.grid.clear();
+
+                // Read the uploaded file
+                const arrayBuffer = await file.arrayBuffer();
+
+                // Cache the uploaded PDF
+                const db = await openDB();
+                await db.put(STORE_NAME, arrayBuffer, file.name);
+
+                // Load the new PDF
+                currentPdfName = file.name;
+                pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                await loadNextPages();
+
+                loadingIndicator.classList.remove('active');
+            } catch (error) {
+                console.error('Error loading uploaded PDF:', error);
+                alert('Có lỗi khi tải file. Vui lòng thử lại.');
             }
-        };
+        }
 
         // Spatial Grid System
         const spatialGrid = {
@@ -391,31 +424,29 @@
             });
         }
 
-        async function loadPDF() {
+        async function loadPDF(filename = currentPdfName) {
             const loadingIndicator = document.getElementById('loading-indicator');
             loadingIndicator.classList.add('active');
-            loadingIndicator.textContent = 'Checking cache...';
+            loadingIndicator.textContent = 'Đang kiểm tra bộ nhớ đệm...';
 
             try {
                 const db = await openDB();
-                const pdfKey = 'khoa_hoc.pdf';
-                let pdfData = await db.get(STORE_NAME, pdfKey);
+                let pdfData = await db.get(STORE_NAME, filename);
 
                 if (!pdfData) {
-                    loadingIndicator.textContent = 'Downloading PDF...';
-                    const response = await fetch('khoa_hoc.pdf');
+                    loadingIndicator.textContent = 'Đang tải PDF...';
+                    const response = await fetch(filename);
                     pdfData = await response.arrayBuffer();
 
-                    await db.put(STORE_NAME, pdfData, pdfKey);
-                    loadingIndicator.textContent = 'PDF cached successfully';
+                    await db.put(STORE_NAME, pdfData, filename);
+                    loadingIndicator.textContent = 'Đã lưu PDF vào bộ nhớ đệm';
                 } else {
-                    loadingIndicator.textContent = 'Loading from cache...';
+                    loadingIndicator.textContent = 'Đang tải từ bộ nhớ đệm...';
                 }
 
                 pdfDoc = await pdfjsLib.getDocument({ data: pdfData }).promise;
 
-                actionHistory.loadFromLocalStorage();
-                const savedPaths = localStorage.getItem('drawings');
+                const savedPaths = localStorage.getItem(`drawings_${filename}`);
                 if (savedPaths) {
                     pathsByPage = JSON.parse(savedPaths);
                     Object.entries(pathsByPage).forEach(([pageNumber, paths]) => {
@@ -428,7 +459,7 @@
 
             } catch (error) {
                 console.error('Error loading PDF:', error);
-                loadingIndicator.textContent = 'Error loading PDF: ' + error.message;
+                loadingIndicator.textContent = 'Lỗi khi tải PDF: ' + error.message;
             }
         }
 
@@ -574,11 +605,7 @@
                         if (isPointInPath(path, x, y)) {
                             const pathIndex = pathsByPage[pageNumber].indexOf(path);
                             if (pathIndex !== -1) {
-                                actionHistory.addAction(pageNumber, {
-                                    type: 'erase',
-                                    path: path,
-                                    index: pathIndex
-                                });
+
                                 pathsByPage[pageNumber].splice(pathIndex, 1);
                                 erasedPath = true;
                             }
@@ -613,10 +640,6 @@
             if (currentMode === 'pen' && currentPath.length > 0) {
                 pathsByPage[pageNumber].push(currentPath);
                 spatialGrid.addPath(currentPath, pageNumber);
-                actionHistory.addAction(pageNumber, {
-                    type: 'draw',
-                    path: currentPath
-                });
                 saveDrawings();
             }
 
@@ -658,7 +681,7 @@
 
         function saveDrawings() {
             try {
-                localStorage.setItem('drawings', JSON.stringify(pathsByPage));
+                localStorage.setItem(`drawings_${currentPdfName}`, JSON.stringify(pathsByPage));
             } catch (error) {
                 console.error('Error saving drawings:', error);
             }
@@ -799,47 +822,6 @@
             cursorDot.style.backgroundColor = '#000';
         });
 
-        undoBtn.addEventListener('click', () => {
-            const visibleCanvas = getVisibleCanvas();
-            if (!visibleCanvas) return;
-
-            const pageNumber = parseInt(visibleCanvas.dataset.pageNumber);
-            const undoneAction = actionHistory.undo(pageNumber);
-
-            if (undoneAction) {
-                if (undoneAction.type === 'draw') {
-                    pathsByPage[pageNumber].pop();
-                } else if (undoneAction.type === 'erase') {
-                    pathsByPage[pageNumber].splice(undoneAction.index, 0, undoneAction.path);
-                }
-
-                spatialGrid.clearPage(pageNumber);
-                pathsByPage[pageNumber].forEach(path => spatialGrid.addPath(path, pageNumber));
-                redrawCanvas(visibleCanvas);
-                saveDrawings();
-            }
-        });
-
-        redoBtn.addEventListener('click', () => {
-            const visibleCanvas = getVisibleCanvas();
-            if (!visibleCanvas) return;
-
-            const pageNumber = parseInt(visibleCanvas.dataset.pageNumber);
-            const redoneAction = actionHistory.redo(pageNumber);
-
-            if (redoneAction) {
-                if (redoneAction.type === 'draw') {
-                    pathsByPage[pageNumber].push(redoneAction.path);
-                } else if (redoneAction.type === 'erase') {
-                    pathsByPage[pageNumber].splice(redoneAction.index, 1);
-                }
-
-                spatialGrid.clearPage(pageNumber);
-                pathsByPage[pageNumber].forEach(path => spatialGrid.addPath(path, pageNumber));
-                redrawCanvas(visibleCanvas);
-                saveDrawings();
-            }
-        });
 
         fullscreenBtn.addEventListener('click', () => {
             toggleFullScreen();
@@ -884,36 +866,39 @@
             if (e.key === 'Escape' && isFullscreen) {
                 document.exitFullscreen();
             }
-            if (e.ctrlKey && e.key === 'z') {
-                e.preventDefault();
-                undoBtn.click();
-            }
-            if (e.ctrlKey && e.key === 'y') {
-                e.preventDefault();
-                redoBtn.click();
-            }
         });
 
         // Initialize
         function init() {
             penBtn.classList.add('active');
+            initializeFileHandlers();
             loadPDF().catch(console.error);
 
             const cursorDot = document.createElement('div');
             cursorDot.className = 'cursor-dot';
             document.body.appendChild(cursorDot);
 
-            // Auto-save
             setInterval(() => {
                 if (Object.keys(pathsByPage).length > 0) {
                     saveDrawings();
-                    actionHistory.saveToLocalStorage();
                 }
             }, 30000);
         }
 
         // Start the application
         init();
+
+        function getVisibleCanvas() {
+            const canvases = document.querySelectorAll('.drawing-canvas');
+            for (const canvas of canvases) {
+                const rect = canvas.getBoundingClientRect();
+                if (rect.top < window.innerHeight && rect.bottom > 0) {
+                    return canvas;
+                }
+            }
+            return null;
+        }
+
 
     </script>
 </body>
